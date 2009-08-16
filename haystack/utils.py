@@ -23,7 +23,26 @@ class Highlighter(object):
         return self.render_html(highlight_locations, start_offset, end_offset)
     
     def find_highlightable_words(self):
-        pass
+        query_words = [word in self.query.split() if not word.startswith('-')]
+        word_positions = {}
+        
+        for word in query_words:
+            if not word in word_positions:
+                word_positions[word] = []
+            
+            start_offset = 0
+            end_offset = len(self.text_block)
+            
+            while start_offset < end_offset:
+                next_offset = self.text_block.find(word, start_offset, end_offset)
+                
+                if next_offset == -1:
+                    break
+                
+                word_positions[word].append(next_offset)
+                start_offset = next_offset + len(word)
+        
+        return word_positions
     
     def find_window(self, highlight_locations):
         pass
