@@ -117,6 +117,19 @@ class SolrSearchBackendTestCase(TestCase):
         self.assertEqual(self.sb.search('', narrow_queries=['name:daniel1']), [])
         results = self.sb.search('Index', narrow_queries=['name:daniel1'])
         self.assertEqual(results['hits'], 1)
+
+    def test_search_should_support_narrow_queries_with_spaces(self):
+        space_model = MockModel()
+        space_model.author = 'foo bar'
+        space_model.id = 99
+        
+        self.sample_objs.append(space_model)
+        
+        self.sb.update(self.smmi, self.sample_objs)
+        results = self.sb.search('*:*', narrow_queries=['name:foo bar'])
+        self.assertEqual(results['hits'], 1)
+    
+
     
     def test_more_like_this(self):
         self.sb.update(self.smmi, self.sample_objs)

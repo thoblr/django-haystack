@@ -51,7 +51,6 @@ class SearchBackend(BaseSearchBackend):
                 docs.append(doc)
         except UnicodeDecodeError:
             sys.stderr.write("Chunk failed.\n")
-        
         self.conn.add(docs, commit=commit)
 
     def remove(self, obj_or_string, commit=True):
@@ -128,10 +127,16 @@ class SearchBackend(BaseSearchBackend):
             kwargs['facet.query'] = ["%s:%s" % (field, value) for field, value in query_facets.items()]
         
         if narrow_queries is not None:
-            kwargs['fq'] = list(narrow_queries)
-        
+            kwargs['fq'] = [self._fix_narrow_query(nq) for nq in narrow_queries]
+            
         raw_results = self.conn.search(query_string, **kwargs)
         return self._process_results(raw_results, highlight=highlight)
+    
+    def _fix_narrow_query(self, narrow_query):
+        if ' '  in narrow_query:
+            return '%s%s"%s"' % tuple(narrow_query.partition(':'))
+        else:
+            return narrow_query
     
     def more_like_this(self, model_instance, additional_query_string=None, start_offset=0, end_offset=None, **kwargs):
         index = self.site.get_index(model_instance.__class__)
