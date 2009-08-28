@@ -1,5 +1,5 @@
 from django.test import TestCase
-from haystack.forms import ModelSearchForm, model_choices
+from haystack.forms import ModelSearchForm, model_choices, FacetedSearchForm
 from haystack import sites
 from haystack.query import SearchQuerySet
 from haystack.backends.dummy_backend import SearchBackend as DummySearchBackend
@@ -44,3 +44,18 @@ class ModelSearchFormTestCase(TestCase):
         mis.register(AnotherMockModel)
         self.assertEqual(len(model_choices(site=mis)), 2)
         self.assertEqual([option[1] for option in model_choices(site=mis)], [u'Another mock models', u'Mock models'])
+
+
+class FacetedSearchFormTestCase(TestCase):
+    def setUp(self):
+        super(FacetedSearchFormTestCase, self).setUp()
+        self.sqs = SearchQuerySet(query=DummySearchQuery(backend=DummySearchBackend()), site=None)
+        
+        self.target = FacetedSearchForm(data={'selected_facets': 'foo, bar'},
+                                        searchqueryset=self.sqs)
+    
+    def test_selected_facets(self):
+        self.assertTrue(self.target.is_valid())
+        result = self.target.search()
+        self.assertEquals(result.query.narrow_queries, set(['foo', 'bar']))
+        

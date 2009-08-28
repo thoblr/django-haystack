@@ -57,7 +57,8 @@ class FacetedSearchForm(SearchForm):
         sqs = super(FacetedSearchForm, self).search()
         
         if self.cleaned_data['selected_facets']:
-            sqs = sqs.narrow(self.cleaned_data['selected_facets'])
+            for facet in self.cleaned_data['selected_facets'].split(","):
+                sqs = sqs.narrow(facet.strip())
         
         return sqs
 
