@@ -19,10 +19,6 @@ class SolrSearchBackendTestCase(TestCase):
     def setUp(self):
         super(SolrSearchBackendTestCase, self).setUp()
         
-        # Stow.
-        self.old_solr_url = getattr(settings, 'HAYSTACK_SOLR_URL', 'http://localhost:9001/solr/test_default')
-        settings.HAYSTACK_SOLR_URL = 'http://localhost:9001/solr/test_default'
-        
         self.raw_solr = pysolr.Solr(settings.HAYSTACK_SOLR_URL)
         self.raw_solr.delete(q='*:*')
         
@@ -44,11 +40,10 @@ class SolrSearchBackendTestCase(TestCase):
             mock.author = 'daniel%s' % i
             mock.pub_date = datetime.date(2009, 2, 25) - datetime.timedelta(days=i)
             self.sample_objs.append(mock)
-    
+
     def tearDown(self):
         import haystack
         haystack.site = self.old_site
-        settings.HAYSTACK_SOLR_URL = self.old_solr_url
         super(SolrSearchBackendTestCase, self).tearDown()
     
     def test_update(self):
@@ -144,11 +139,7 @@ class LiveSolrSearchQueryTestCase(TestCase):
     
     def setUp(self):
         super(LiveSolrSearchQueryTestCase, self).setUp()
-        
-        # Stow.
-        self.old_solr_url = getattr(settings, 'HAYSTACK_SOLR_URL', 'http://localhost:9001/solr/test_default')
-        settings.HAYSTACK_SOLR_URL = 'http://localhost:9001/solr/test_default'
-        
+                
         self.sq = SearchQuery(backend=SearchBackend())
         
         # Force indexing of the content.
@@ -156,7 +147,6 @@ class LiveSolrSearchQueryTestCase(TestCase):
             mock.save()
     
     def tearDown(self):
-        settings.HAYSTACK_SOLR_URL = self.old_solr_url
         super(LiveSolrSearchQueryTestCase, self).tearDown()
     
     def test_get_spelling(self):
