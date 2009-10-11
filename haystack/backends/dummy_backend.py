@@ -80,7 +80,7 @@ class SearchQuery(BaseSearchQuery):
                 filter_list.append("OR")
             
             filter_list.append(FILTER_SEPARATOR.join((the_filter.field, the_filter.filter_type)))
-            filter_list.append(the_filter.value)
+            filter_list.append(str(the_filter.value))
             
             if not len(filters):
                 del(filter_list[0])
