@@ -8,18 +8,21 @@ class MockTag(models.Model):
 
 
 class MockModel(models.Model):
-    user = models.CharField(max_length=255)
+    author = models.CharField(max_length=255)
     foo = models.CharField(max_length=255, blank=True)
     pub_date = models.DateTimeField(default=datetime.datetime.now)
     tag = models.ForeignKey(MockTag)
     
     def __unicode__(self):
-        return self.user
+        return self.author
+    
+    def hello(self):
+        return 'World!'
 
 
 class AnotherMockModel(models.Model):
-    user = models.CharField(max_length=255)
+    author = models.CharField(max_length=255)
     pub_date = models.DateTimeField(default=datetime.datetime.now)
     
     def __unicode__(self):
-        return self.user
+        return self.author

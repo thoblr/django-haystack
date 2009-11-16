@@ -14,12 +14,14 @@ Table Of Contents
    settings
    faq
    who_uses
+   debugging
    
    best_practices
    faceting
    
    searchqueryset_api
    searchindex_api
+   searchfield_api
    searchresult_api
    searchsite_api
    searchquery_api
@@ -27,6 +29,7 @@ Table Of Contents
    
    running_tests
    creating_new_backends
+   utils
 
 
 Indices and tables

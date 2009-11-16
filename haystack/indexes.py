@@ -1,6 +1,8 @@
 from django.db.models import signals
+from django.utils.encoding import force_unicode
 import haystack
 from haystack.fields import *
+from haystack.utils import get_identifier
 
 
 class DeclarativeMetaclass(type):
@@ -28,7 +30,8 @@ class DeclarativeMetaclass(type):
         return super(DeclarativeMetaclass, cls).__new__(cls, name, bases, attrs)
 
 
-class SearchIndex(object):
+# DRL_FIXME: Before 1.0, this should become ``SearchIndex`` again.
+class BaseSearchIndex(object):
     """
     Base class for building indexes.
     
@@ -63,16 +66,20 @@ class SearchIndex(object):
             raise SearchFieldError("An index must have one (and only one) SearchField with document=True.")
     
     def _setup_save(self, model):
-        signals.post_save.connect(self.update_object, sender=model)
+        """A hook for controlling what happens when the registered model is saved."""
+        pass
     
     def _setup_delete(self, model):
-        signals.post_delete.connect(self.remove_object, sender=model)
+        """A hook for controlling what happens when the registered model is deleted."""
+        pass
     
     def _teardown_save(self, model):
-        signals.post_save.disconnect(self.update_object, sender=model)
+        """A hook for removing the behavior when the registered model is saved."""
+        pass
     
     def _teardown_delete(self, model):
-        signals.post_delete.disconnect(self.remove_object, sender=model)
+        """A hook for removing the behavior when the registered model is deleted."""
+        pass
     
     def get_queryset(self):
         """
@@ -86,7 +93,11 @@ class SearchIndex(object):
         """
         Fetches and adds/alters data before indexing.
         """
-        self.prepared_data = {}
+        self.prepared_data = {
+            'id': get_identifier(obj),
+            'django_ct': "%s.%s" % (obj._meta.app_label, obj._meta.module_name),
+            'django_id': force_unicode(obj.pk),
+        }
         
         for field_name, field in self.fields.items():
             self.prepared_data[field_name] = field.prepare(obj)
@@ -99,7 +110,7 @@ class SearchIndex(object):
         # Remove any fields that lack a value and are `null=True`.
         for field_name, field in self.fields.items():
             if field.null is True:
-                if self.prepared_data[field_name] == field.default or self.prepared_data[field_name] is None:
+                if self.prepared_data[field_name] is None:
                     del(self.prepared_data[field_name])
         
         return self.prepared_data
@@ -109,31 +120,31 @@ class SearchIndex(object):
         for field_name, field in self.fields.items():
             if field.document is True:
                 return field_name
-
+    
     def update(self):
         """Update the entire index"""
         self.backend.update(self, self.get_queryset())
-
+    
     def update_object(self, instance, **kwargs):
         """
         Update the index for a single object. Attached to the class's
         post-save hook.
         """
         # Check to make sure we want to index this first.
-        if self.should_update(instance):
+        if self.should_update(instance, **kwargs):
             self.backend.update(self, [instance])
-
+    
     def remove_object(self, instance, **kwargs):
         """
         Remove an object from the index. Attached to the class's 
         post-delete hook.
         """
         self.backend.remove(instance)
-
+    
     def clear(self):
         """Clear the entire index."""
         self.backend.clear(models=[self.model])
-
+    
     def reindex(self):
         """Completely clear the index for this model and rebuild it."""
         self.clear()
@@ -150,7 +161,7 @@ class SearchIndex(object):
         """
         return None
     
-    def should_update(self, instance):
+    def should_update(self, instance, **kwargs):
         """
         Determine if an object should be updated in the index.
         
@@ -173,6 +184,25 @@ class SearchIndex(object):
         By default, returns ``all()`` on the model's default manager.
         """
         return self.model._default_manager.all()
+
+
+# DRL_FIXME: Before 1.0, this should become ``RealTimeSearchIndex``.
+class SearchIndex(BaseSearchIndex):
+    """
+    A variant of the ``SearchIndex`` that constantly keeps the index fresh,
+    as opposed to requiring a cron job.
+    """
+    def _setup_save(self, model):
+        signals.post_save.connect(self.update_object, sender=model)
+    
+    def _setup_delete(self, model):
+        signals.post_delete.connect(self.remove_object, sender=model)
+    
+    def _teardown_save(self, model):
+        signals.post_save.disconnect(self.update_object, sender=model)
+    
+    def _teardown_delete(self, model):
+        signals.post_delete.disconnect(self.remove_object, sender=model)
 
 
 class BasicSearchIndex(SearchIndex):

@@ -6,34 +6,35 @@ from core.tests.mocks import MockSearchBackend
 
 
 class BadSearchIndex1(indexes.SearchIndex):
-    author = indexes.CharField(model_attr='user')
+    author = indexes.CharField(model_attr='author')
     pub_date = indexes.DateTimeField(model_attr='pub_date')
 
 
 class BadSearchIndex2(indexes.SearchIndex):
     content = indexes.CharField(document=True, use_template=True)
     content2 = indexes.CharField(document=True, use_template=True)
-    author = indexes.CharField(model_attr='user')
+    author = indexes.CharField(model_attr='author')
     pub_date = indexes.DateTimeField(model_attr='pub_date')
 
 
 class GoodMockSearchIndex(indexes.SearchIndex):
     content = indexes.CharField(document=True, use_template=True)
-    author = indexes.CharField(model_attr='user')
+    author = indexes.CharField(model_attr='author')
     pub_date = indexes.DateTimeField(model_attr='pub_date')
     extra = indexes.CharField(indexed=False, use_template=True)
 
 
 # For testing inheritance...
 class AltGoodMockSearchIndex(GoodMockSearchIndex):
-    additional = indexes.CharField(model_attr='user')
+    additional = indexes.CharField(model_attr='author')
 
 
 class GoodCustomMockSearchIndex(indexes.SearchIndex):
     content = indexes.CharField(document=True, use_template=True)
-    author = indexes.CharField(model_attr='user')
+    author = indexes.CharField(model_attr='author')
     pub_date = indexes.DateTimeField(model_attr='pub_date')
     extra = indexes.CharField(indexed=False, use_template=True)
+    hello = indexes.CharField(model_attr='hello')
     
     def prepare(self, obj):
         super(GoodCustomMockSearchIndex, self).prepare(obj)
@@ -49,7 +50,7 @@ class GoodCustomMockSearchIndex(indexes.SearchIndex):
 
 class GoodNullableMockSearchIndex(indexes.SearchIndex):
     content = indexes.CharField(document=True, use_template=True)
-    author = indexes.CharField(model_attr='user', null=True)
+    author = indexes.CharField(model_attr='author', null=True)
 
 
 class SearchIndexTestCase(TestCase):
@@ -118,30 +119,40 @@ class SearchIndexTestCase(TestCase):
     def test_prepare(self):
         mock = MockModel()
         mock.pk = 20
-        mock.user = 'daniel%s' % mock.id
+        mock.author = 'daniel%s' % mock.id
         mock.pub_date = datetime.datetime(2009, 1, 31, 4, 19, 0)
         
-        self.assertEqual(len(self.mi.prepare(mock)), 4)
-        self.assertEqual(sorted(self.mi.prepare(mock).keys()), ['author', 'content', 'extra', 'pub_date'])
+        self.assertEqual(len(self.mi.prepare(mock)), 7)
+        self.assertEqual(sorted(self.mi.prepare(mock).keys()), ['author', 'content', 'django_ct', 'django_id', 'extra', 'id', 'pub_date'])
     
     def test_custom_prepare(self):
         mock = MockModel()
         mock.pk = 20
-        mock.user = 'daniel%s' % mock.id
+        mock.author = 'daniel%s' % mock.id
         mock.pub_date = datetime.datetime(2009, 1, 31, 4, 19, 0)
         
-        self.assertEqual(len(self.cmi.prepare(mock)), 5)
-        self.assertEqual(sorted(self.cmi.prepare(mock).keys()), ['author', 'content', 'extra', 'pub_date', 'whee'])
+        self.assertEqual(len(self.cmi.prepare(mock)), 9)
+        self.assertEqual(sorted(self.cmi.prepare(mock).keys()), ['author', 'content', 'django_ct', 'django_id', 'extra', 'hello', 'id', 'pub_date', 'whee'])
     
     def test_custom_prepare_author(self):
         mock = MockModel()
         mock.pk = 20
-        mock.user = 'daniel%s' % mock.id
+        mock.author = 'daniel%s' % mock.id
         mock.pub_date = datetime.datetime(2009, 1, 31, 4, 19, 0)
         
-        self.assertEqual(len(self.cmi.prepare(mock)), 5)
-        self.assertEqual(sorted(self.cmi.prepare(mock).keys()), ['author', 'content', 'extra', 'pub_date', 'whee'])
+        self.assertEqual(len(self.cmi.prepare(mock)), 9)
+        self.assertEqual(sorted(self.cmi.prepare(mock).keys()), ['author', 'content', 'django_ct', 'django_id', 'extra', 'hello', 'id', 'pub_date', 'whee'])
         self.assertEqual(self.cmi.prepared_data['author'], "Hi, I'm daniel20")
+    
+    def test_custom_model_attr(self):
+        mock = MockModel()
+        mock.pk = 20
+        mock.author = 'daniel%s' % mock.id
+        mock.pub_date = datetime.datetime(2009, 1, 31, 4, 19, 0)
+        
+        self.assertEqual(len(self.cmi.prepare(mock)), 9)
+        self.assertEqual(sorted(self.cmi.prepare(mock).keys()), ['author', 'content', 'django_ct', 'django_id', 'extra', 'hello', 'id', 'pub_date', 'whee'])
+        self.assertEqual(self.cmi.prepared_data['hello'], u'World!')
     
     def test_get_content_field(self):
         self.assertEqual(self.mi.get_content_field(), 'content')
@@ -156,7 +167,7 @@ class SearchIndexTestCase(TestCase):
         
         mock = MockModel()
         mock.pk = 20
-        mock.user = 'daniel%s' % mock.id
+        mock.author = 'daniel%s' % mock.id
         mock.pub_date = datetime.datetime(2009, 1, 31, 4, 19, 0)
         
         self.mi.update_object(mock)
@@ -219,11 +230,12 @@ class SearchIndexTestCase(TestCase):
     def test_nullable(self):
         mock = MockModel()
         mock.pk = 20
+        mock.author = None
         mock.pub_date = datetime.datetime(2009, 1, 31, 4, 19, 0)
         
         prepared_data = self.cnmi.prepare(mock)
-        self.assertEqual(len(prepared_data), 1)
-        self.assertEqual(sorted(prepared_data.keys()), ['content'])
+        self.assertEqual(len(prepared_data), 4)
+        self.assertEqual(sorted(prepared_data.keys()), ['content', 'django_ct', 'django_id', 'id'])
 
 
 class BasicModelSearchIndex(indexes.ModelSearchIndex):
@@ -233,19 +245,19 @@ class BasicModelSearchIndex(indexes.ModelSearchIndex):
 
 class FieldsModelSearchIndex(indexes.ModelSearchIndex):
     class Meta:
-        fields = ['user', 'pub_date']
+        fields = ['author', 'pub_date']
 
 
 class ExcludesModelSearchIndex(indexes.ModelSearchIndex):
     class Meta:
-        excludes = ['user', 'foo']
+        excludes = ['author', 'foo']
 
 
 class FieldsWithOverrideModelSearchIndex(indexes.ModelSearchIndex):
     foo = indexes.IntegerField(model_attr='foo')
     
     class Meta:
-        fields = ['user', 'foo']
+        fields = ['author', 'foo']
 
 
 class ModelSearchIndexTestCase(TestCase):
@@ -262,9 +274,9 @@ class ModelSearchIndexTestCase(TestCase):
         self.assert_('foo' in self.bmsi.fields)
         self.assert_(isinstance(self.bmsi.fields['foo'], indexes.CharField))
         self.assertEqual(self.bmsi.fields['foo'].null, False)
-        self.assert_('user' in self.bmsi.fields)
-        self.assert_(isinstance(self.bmsi.fields['user'], indexes.CharField))
-        self.assertEqual(self.bmsi.fields['user'].null, False)
+        self.assert_('author' in self.bmsi.fields)
+        self.assert_(isinstance(self.bmsi.fields['author'], indexes.CharField))
+        self.assertEqual(self.bmsi.fields['author'].null, False)
         self.assert_('pub_date' in self.bmsi.fields)
         self.assert_(isinstance(self.bmsi.fields['pub_date'], indexes.DateTimeField))
         self.assert_(isinstance(self.bmsi.fields['pub_date'].default, datetime.datetime))
@@ -275,8 +287,8 @@ class ModelSearchIndexTestCase(TestCase):
     
     def test_fields(self):
         self.assertEqual(len(self.fmsi.fields), 3)
-        self.assert_('user' in self.fmsi.fields)
-        self.assert_(isinstance(self.fmsi.fields['user'], indexes.CharField))
+        self.assert_('author' in self.fmsi.fields)
+        self.assert_(isinstance(self.fmsi.fields['author'], indexes.CharField))
         self.assert_('pub_date' in self.fmsi.fields)
         self.assert_(isinstance(self.fmsi.fields['pub_date'], indexes.DateTimeField))
         self.assert_('text' in self.fmsi.fields)
@@ -291,8 +303,8 @@ class ModelSearchIndexTestCase(TestCase):
     
     def test_fields_with_override(self):
         self.assertEqual(len(self.fwomsi.fields), 3)
-        self.assert_('user' in self.fwomsi.fields)
-        self.assert_(isinstance(self.fwomsi.fields['user'], indexes.CharField))
+        self.assert_('author' in self.fwomsi.fields)
+        self.assert_(isinstance(self.fwomsi.fields['author'], indexes.CharField))
         self.assert_('foo' in self.fwomsi.fields)
         self.assert_(isinstance(self.fwomsi.fields['foo'], indexes.IntegerField))
         self.assert_('text' in self.fwomsi.fields)

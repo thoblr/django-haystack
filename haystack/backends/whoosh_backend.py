@@ -7,10 +7,15 @@ from django.core.exceptions import ImproperlyConfigured
 from django.db.models.loading import get_model
 from django.utils.datetime_safe import datetime
 from django.utils.encoding import force_unicode
-from haystack.backends import BaseSearchBackend, BaseSearchQuery
+from haystack.backends import BaseSearchBackend, BaseSearchQuery, log_query
 from haystack.fields import DateField, DateTimeField, IntegerField, FloatField, BooleanField, MultiValueField
 from haystack.exceptions import MissingDependency, SearchBackendError
 from haystack.models import SearchResult
+from haystack.utils import get_identifier
+try:
+    set
+except NameError:
+    from sets import Set as set
 try:
     import whoosh
     from whoosh.analysis import StemmingAnalyzer
@@ -23,10 +28,12 @@ except ImportError:
     raise MissingDependency("The 'whoosh' backend requires the installation of 'Whoosh'. Please refer to the documentation.")
 
 # Handle minimum requirement.
-if not hasattr(whoosh, '__version__') or whoosh.__version__ < (0, 3, 0):
-    raise MissingDependency("The 'whoosh' backend requires version 0.3.0 or greater.")
+if not hasattr(whoosh, '__version__') or whoosh.__version__ < (0, 3, 1):
+    raise MissingDependency("The 'whoosh' backend requires version 0.3.1 or greater.")
+
 
 DATETIME_REGEX = re.compile('^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})T(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})(\.\d{3,6}Z?)?$')
+BACKEND_NAME = 'whoosh'
 
 
 class SearchBackend(BaseSearchBackend):
@@ -120,34 +127,30 @@ class SearchBackend(BaseSearchBackend):
         writer = self.index.writer()
         
         for obj in iterable:
-            doc = {}
-            doc['id'] = force_unicode(self.get_identifier(obj))
-            doc['django_ct'] = force_unicode("%s.%s" % (obj._meta.app_label, obj._meta.module_name))
-            doc['django_id'] = force_unicode(obj.pk)
-            other_data = index.prepare(obj)
+            doc = index.prepare(obj)
             
             # Really make sure it's unicode, because Whoosh won't have it any
             # other way.
-            for key in other_data:
-                other_data[key] = self._from_python(other_data[key])
+            for key in doc:
+                doc[key] = self._from_python(doc[key])
             
-            doc.update(other_data)
             writer.update_document(**doc)
         
-        # For now, commit no matter what, as we run into locking issues otherwise.
-        writer.commit()
-        
-        # If spelling support is desired, add to the dictionary.
-        if getattr(settings, 'HAYSTACK_INCLUDE_SPELLING', False) is True:
-            sp = SpellChecker(self.storage)
-            sp.add_field(self.index, self.content_field_name)
+        if len(iterable) > 0:
+            # For now, commit no matter what, as we run into locking issues otherwise.
+            writer.commit()
+            
+            # If spelling support is desired, add to the dictionary.
+            if getattr(settings, 'HAYSTACK_INCLUDE_SPELLING', False) is True:
+                sp = SpellChecker(self.storage)
+                sp.add_field(self.index, self.content_field_name)
     
     def remove(self, obj_or_string, commit=True):
         if not self.setup_complete:
             self.setup()
         
         self.index = self.index.refresh()
-        whoosh_id = self.get_identifier(obj_or_string)
+        whoosh_id = get_identifier(obj_or_string)
         self.index.delete_by_query(q=self.parser.parse(u'id:"%s"' % whoosh_id))
         
         # For now, commit no matter what, as we run into locking issues otherwise.
@@ -188,9 +191,11 @@ class SearchBackend(BaseSearchBackend):
         self.index = self.index.refresh()
         self.index.optimize()
     
+    @log_query
     def search(self, query_string, sort_by=None, start_offset=0, end_offset=None,
                fields='', highlight=False, facets=None, date_facets=None, query_facets=None,
-               narrow_queries=None, spelling_query=None, **kwargs):
+               narrow_queries=None, spelling_query=None,
+               limit_to_registered_models=True, **kwargs):
         if not self.setup_complete:
             self.setup()
         
@@ -253,6 +258,17 @@ class SearchBackend(BaseSearchBackend):
         narrowed_results = None
         self.index = self.index.refresh()
         
+        if limit_to_registered_models:
+            # Using narrow queries, limit the results to only models registered
+            # with the current site.
+            if narrow_queries is None:
+                narrow_queries = set()
+            
+            registered_models = self.build_registered_models_list()
+            
+            if len(registered_models) > 0:
+                narrow_queries.add('django_ct:(%s)' % ' OR '.join(registered_models))
+        
         if narrow_queries is not None:
             # Potentially expensive? I don't see another way to do it in Whoosh...
             narrow_searcher = self.index.searcher()
@@ -278,14 +294,13 @@ class SearchBackend(BaseSearchBackend):
                     'hits': 0,
                 }
             
-            # DRL_TODO: Ignoring offsets for now, as slicing caused issues with pagination.
             raw_results = searcher.search(parsed_query, sortedby=sort_by, reverse=reverse)
             
             # Handle the case where the results have been narrowed.
             if narrowed_results:
                 raw_results.filter(narrowed_results)
             
-            return self._process_results(raw_results, highlight=highlight, query_string=query_string)
+            return self._process_results(raw_results, start_offset, end_offset, highlight=highlight, query_string=query_string, spelling_query=spelling_query)
         else:
             if getattr(settings, 'HAYSTACK_INCLUDE_SPELLING', False):
                 if spelling_query:
@@ -308,10 +323,15 @@ class SearchBackend(BaseSearchBackend):
             'hits': 0,
         }
     
-    def _process_results(self, raw_results, highlight=False, query_string=''):
+    def _process_results(self, raw_results, start_offset, end_offset, highlight=False, query_string='', spelling_query=None):
         from haystack import site
         results = []
+        
+        # It's important to grab the hits first before slicing. Otherwise, this
+        # can cause pagination failures.
         hits = len(raw_results)
+        raw_results = raw_results[start_offset:end_offset]
+        
         facets = {}
         spelling_suggestion = None
         indexed_models = site.get_indexed_models()
@@ -360,8 +380,11 @@ class SearchBackend(BaseSearchBackend):
             else:
                 hits -= 1
         
-        if getattr(settings, 'HAYSTACK_INCLUDE_SPELLING', False) is True:
-            spelling_suggestion = self.create_spelling_suggestion(query_string)
+        if getattr(settings, 'HAYSTACK_INCLUDE_SPELLING', False):
+            if spelling_query:
+                spelling_suggestion = self.create_spelling_suggestion(spelling_query)
+            else:
+                spelling_suggestion = self.create_spelling_suggestion(query_string)
         
         return {
             'results': results,
@@ -373,7 +396,7 @@ class SearchBackend(BaseSearchBackend):
     def create_spelling_suggestion(self, query_string):
         spelling_suggestion = None
         sp = SpellChecker(self.storage)
-        cleaned_query = query_string
+        cleaned_query = force_unicode(query_string)
         
         if not query_string:
             return spelling_suggestion
@@ -461,128 +484,53 @@ class SearchQuery(BaseSearchQuery):
         super(SearchQuery, self).__init__(backend=backend)
         self.backend = backend or SearchBackend()
     
-    def build_query(self):
-        query = u''
-        
-        if not self.query_filters:
-            # Match all.
-            query = u'*'
-        else:
-            query_chunks = []
-            
-            for the_filter in self.query_filters:
-                if the_filter.is_and():
-                    query_chunks.append('AND')
-                
-                if the_filter.is_not():
-                    query_chunks.append('NOT')
-                
-                if the_filter.is_or():
-                    query_chunks.append('OR')
-                
-                value = the_filter.value
-                
-                if the_filter.filter_type != 'in':
-                    # 'in' is a bit of a special case, as we don't want to
-                    # convert a valid list/tuple to string. Defer handling it
-                    # until later...
-                    value = self.backend._from_python(value)
-                
-                # Check to see if it's a phrase for an exact match.
-                if ' ' in value:
-                    value = '"%s"' % value
-                
-                # 'content' is a special reserved word, much like 'pk' in
-                # Django's ORM layer. It indicates 'no special field'.
-                if the_filter.field == 'content':
-                    query_chunks.append(value)
-                else:
-                    filter_types = {
-                        'exact': "%s:%s",
-                        'gt': "%s:{%s TO}",
-                        'gte': "%s:[%s TO]",
-                        'lt': "%s:{TO %s}",
-                        'lte': "%s:[TO %s]",
-                        'startswith': "%s:%s*",
-                    }
-                    
-                    if the_filter.filter_type != 'in':
-                        possible_datetime = DATETIME_REGEX.search(value)
-                        
-                        if possible_datetime:
-                            value = self.clean(value)
-                        
-                        query_chunks.append(filter_types[the_filter.filter_type] % (the_filter.field, value))
-                    else:
-                        in_options = []
-                        
-                        for possible_value in value:
-                            pv = self.backend._from_python(possible_value)
-                            possible_datetime = DATETIME_REGEX.search(pv)
-                            
-                            if possible_datetime:
-                                pv = self.clean(pv)
-                            
-                            in_options.append('%s:"%s"' % (the_filter.field, pv))
-                        
-                        query_chunks.append("(%s)" % " OR ".join(in_options))
-            
-            if query_chunks[0] in ('AND', 'OR'):
-                # Pull off an undesirable leading "AND" or "OR".
-                del(query_chunks[0])
-            
-            query = u" ".join(query_chunks)
-        
-        if len(self.models):
-            models = ['django_ct:"%s.%s"' % (model._meta.app_label, model._meta.module_name) for model in self.models]
-            models_clause = ' OR '.join(models)
-            final_query = u'(%s) AND (%s)' % (query, models_clause)
-        else:
-            final_query = query
-        
-        if self.boost:
-            boost_list = []
-            
-            for boost_word, boost_value in self.boost.items():
-                boost_list.append("%s^%s" % (boost_word, boost_value))
-            
-            final_query = u"%s %s" % (final_query, " ".join(boost_list))
-        
-        return final_query
     
-    def run(self, spelling_query=None):
-        """Builds and executes the query. Returns a list of search results."""
-        final_query = self.build_query()
-        kwargs = {
-            'start_offset': self.start_offset,
-        }
+    def build_query_fragment(self, field, filter_type, value):
+        result = ''
         
-        if self.order_by:
-            kwargs['sort_by'] = self.order_by
+        if filter_type != 'in':
+            # 'in' is a bit of a special case, as we don't want to
+            # convert a valid list/tuple to string. Defer handling it
+            # until later...
+            value = self.backend._from_python(value)
         
-        if self.end_offset is not None:
-            kwargs['end_offset'] = self.end_offset - self.start_offset
+        # Check to see if it's a phrase for an exact match.
+        if ' ' in value:
+            value = '"%s"' % value
         
-        if self.highlight:
-            kwargs['highlight'] = self.highlight
+        # 'content' is a special reserved word, much like 'pk' in
+        # Django's ORM layer. It indicates 'no special field'.
+        if field == 'content':
+            result = value
+        else:
+            filter_types = {
+                'exact': "%s:%s",
+                'gt': "%s:{%s TO}",
+                'gte': "%s:[%s TO]",
+                'lt': "%s:{TO %s}",
+                'lte': "%s:[TO %s]",
+                'startswith': "%s:%s*",
+            }
+            
+            if filter_type != 'in':
+                possible_datetime = DATETIME_REGEX.search(value)
+                
+                if possible_datetime:
+                    value = self.clean(value)
+                
+                result = filter_types[filter_type] % (field, value)
+            else:
+                in_options = []
+                
+                for possible_value in value:
+                    pv = self.backend._from_python(possible_value)
+                    possible_datetime = DATETIME_REGEX.search(pv)
+                    
+                    if possible_datetime:
+                        pv = self.clean(pv)
+                    
+                    in_options.append('%s:"%s"' % (field, pv))
+                
+                result = "(%s)" % " OR ".join(in_options)
         
-        if self.facets:
-            kwargs['facets'] = list(self.facets)
-        
-        if self.date_facets:
-            kwargs['date_facets'] = self.date_facets
-        
-        if self.query_facets:
-            kwargs['query_facets'] = self.query_facets
-        
-        if self.narrow_queries:
-            kwargs['narrow_queries'] = self.narrow_queries
-        
-        if spelling_query:
-            kwargs['spelling_query'] = spelling_query
-        
-        results = self.backend.search(final_query, **kwargs)
-        self._results = results.get('results', [])
-        self._hit_count = results.get('hits', 0)
-        self._facet_counts = results.get('facets', {})
-        self._spelling_suggestion = results.get('spelling_suggestion', None)
+        return result

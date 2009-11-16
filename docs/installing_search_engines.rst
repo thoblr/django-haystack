@@ -1,3 +1,5 @@
+.. _ref-installing-search-engines:
+
 =========================
 Installing Search Engines
 =========================
@@ -22,10 +24,17 @@ You'll need to revise your schema. You can generate this from your application
 ``./manage.py build_solr_schema``. Take the output from that command and place
 it in ``apache-solr-1.3.0/example/solr/conf/schema.xml``. Then restart Solr.
 
-You'll also need a Solr binding, ``pysolr``. The development version can be
-grabbed from GitHub via http://github.com/toastdriven/pysolr/tree/master. In the
-near future, this should be merged into the main ``pysolr`` package and
-distributed via PyPI. Place ``pysolr.py`` somewhere on your ``PYTHONPATH``.
+You'll also need a Solr binding, ``pysolr``. The official ``pysolr`` package,
+distributed via PyPI, is the best version to use. Place ``pysolr.py`` somewhere
+on your ``PYTHONPATH``.
+
+.. note::
+
+    ``pysolr`` has it's own dependencies that aren't covered by Haystack. For
+    best results, you should have an ElementTree variant install (preferably the
+    ``lxml`` variant), ``httplib2`` for timeouts (though it will fall back to
+    ``httplib``) and either the ``json`` module that comes with Python 2.5+ or
+    ``simplejson``.
 
 More Like This
 --------------
@@ -80,23 +89,15 @@ Official Download Location: http://whoosh.ca/
 
 Whoosh is pure Python, so it's a great option for getting started quickly and
 for development, though it does work for small scale live deployments. With the
-upcoming 0.3.x release (as of 2009/08/31, the ``0.3.0b21`` is suitable for use),
-Whoosh has become much more performant, stable and better tested. You can
-install via PyPI_ via::
+0.3.1+ releases, Whoosh has become much more performant, stable and better
+tested. You can install via PyPI_ via::
 
     sudo easy_install whoosh
     # ... or ...
     sudo pip install whoosh
 
-Alternatively, you can use the following fork that is guaranteed to work with
-Haystack but may be a revision or two behind::
-
-    git clone http://github.com/toastdriven/whoosh.git
-    cd whoosh
-    sudo python setup.py install
-
-This fork may eventually disappear entirely once it seems that Whoosh is fully
-stable. When that time comes, this documentation will be updated.
+Note that, while capable otherwise, the Whoosh backend does not currently
+support "More Like This" or faceting.
 
 .. _PyPI: http://pypi.python.org/pypi/Whoosh/
 

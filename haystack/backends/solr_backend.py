@@ -1,16 +1,30 @@
+import logging
 import sys
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.db.models.loading import get_model
 from django.utils.encoding import force_unicode
-from haystack.backends import BaseSearchBackend, BaseSearchQuery
+from haystack.backends import BaseSearchBackend, BaseSearchQuery, log_query
 from haystack.exceptions import MissingDependency, MoreLikeThisError
 from haystack.fields import DateField, DateTimeField, IntegerField, FloatField, BooleanField, MultiValueField
 from haystack.models import SearchResult
+from haystack.utils import get_identifier
 try:
-    from pysolr import Solr
+    set
+except NameError:
+    from sets import Set as set
+try:
+    from pysolr import Solr, SolrError
 except ImportError:
     raise MissingDependency("The 'solr' backend requires the installation of 'pysolr'. Please refer to the documentation.")
+
+
+BACKEND_NAME = 'solr'
+
+
+class EmptyResults(object):
+    hits = 0
+    docs = []
 
 
 class SearchBackend(BaseSearchBackend):
@@ -37,44 +51,57 @@ class SearchBackend(BaseSearchBackend):
         
         timeout = getattr(settings, 'HAYSTACK_SOLR_TIMEOUT', 10)
         self.conn = Solr(settings.HAYSTACK_SOLR_URL, timeout=timeout)
+        self.log = logging.getLogger('haystack')
     
     def update(self, index, iterable, commit=True):
         docs = []
         
         try:
             for obj in iterable:
-                doc = {}
-                doc['id'] = self.get_identifier(obj)
-                doc['django_ct'] = "%s.%s" % (obj._meta.app_label, obj._meta.module_name)
-                doc['django_id'] = force_unicode(obj.pk)
-                doc.update(index.prepare(obj))
-                docs.append(doc)
+                docs.append(index.prepare(obj))
         except UnicodeDecodeError:
             sys.stderr.write("Chunk failed.\n")
-        self.conn.add(docs, commit=commit)
-
-    def remove(self, obj_or_string, commit=True):
-        solr_id = self.get_identifier(obj_or_string)
-        self.conn.delete(id=solr_id, commit=commit)
-
-    def clear(self, models=[], commit=True):
-        if not models:
-            # *:* matches all docs in Solr
-            self.conn.delete(q='*:*', commit=commit)
-        else:
-            models_to_delete = []
-            
-            for model in models:
-                models_to_delete.append("django_ct:%s.%s" % (model._meta.app_label, model._meta.module_name))
-            
-            self.conn.delete(q=" OR ".join(models_to_delete), commit=commit)
         
-        # Run an optimize post-clear. http://wiki.apache.org/solr/FAQ#head-9aafb5d8dff5308e8ea4fcf4b71f19f029c4bb99
-        self.conn.optimize()
-
+        if len(docs) > 0:
+            try:
+                self.conn.add(docs, commit=commit)
+            except (IOError, SolrError), e:
+                self.log.error("Failed to add documents to Solr: %s", e)
+    
+    def remove(self, obj_or_string, commit=True):
+        solr_id = get_identifier(obj_or_string)
+        
+        try:
+            self.conn.delete(id=solr_id, commit=commit)
+        except (IOError, SolrError), e:
+            self.log.error("Failed to remove document '%s' from Solr: %s", solr_id, e)
+    
+    def clear(self, models=[], commit=True):
+        try:
+            if not models:
+                # *:* matches all docs in Solr
+                self.conn.delete(q='*:*', commit=commit)
+            else:
+                models_to_delete = []
+                
+                for model in models:
+                    models_to_delete.append("django_ct:%s.%s" % (model._meta.app_label, model._meta.module_name))
+                
+                self.conn.delete(q=" OR ".join(models_to_delete), commit=commit)
+            
+            # Run an optimize post-clear. http://wiki.apache.org/solr/FAQ#head-9aafb5d8dff5308e8ea4fcf4b71f19f029c4bb99
+            self.conn.optimize()
+        except (IOError, SolrError), e:
+            if len(models):
+                self.log.error("Failed to clear Solr index of models '%s': %s", ','.join(models_to_delete), e)
+            else:
+                self.log.error("Failed to clear Solr index: %s", e)
+    
+    @log_query
     def search(self, query_string, sort_by=None, start_offset=0, end_offset=None,
                fields='', highlight=False, facets=None, date_facets=None, query_facets=None,
-               narrow_queries=None, spelling_query=None, **kwargs):
+               narrow_queries=None, spelling_query=None,
+               limit_to_registered_models=True, **kwargs):
         if len(query_string) == 0:
             return {
                 'results': [],
@@ -95,7 +122,7 @@ class SearchBackend(BaseSearchBackend):
             kwargs['start'] = start_offset
         
         if end_offset is not None:
-            kwargs['rows'] = end_offset
+            kwargs['rows'] = end_offset - start_offset
         
         if highlight is True:
             kwargs['hl'] = 'true'
@@ -132,10 +159,26 @@ class SearchBackend(BaseSearchBackend):
             kwargs['facet'] = 'on'
             kwargs['facet.query'] = ["%s:%s" % (field, value) for field, value in query_facets.items()]
         
+        if limit_to_registered_models:
+            # Using narrow queries, limit the results to only models registered
+            # with the current site.
+            if narrow_queries is None:
+                narrow_queries = set()
+            
+            registered_models = self.build_registered_models_list()
+            
+            if len(registered_models) > 0:
+                narrow_queries.add('django_ct:(%s)' % ' OR '.join(registered_models))
+        
         if narrow_queries is not None:
             kwargs['fq'] = [self._fix_narrow_query(nq) for nq in narrow_queries]
             
-        raw_results = self.conn.search(query_string, **kwargs)
+        try:
+            raw_results = self.conn.search(query_string, **kwargs)
+        except (IOError, SolrError), e:
+            self.log.error("Failed to query Solr using '%s': %s", query_string, e)
+            raw_results = EmptyResults()
+        
         return self._process_results(raw_results, highlight=highlight)
     
     def _fix_narrow_query(self, narrow_query):
@@ -145,6 +188,9 @@ class SearchBackend(BaseSearchBackend):
             return narrow_query
     
     def more_like_this(self, model_instance, additional_query_string=None, start_offset=0, end_offset=None, **kwargs):
+    def more_like_this(self, model_instance, additional_query_string=None,
+                       start_offset=0, end_offset=None,
+                       limit_to_registered_models=True, **kwargs):
         index = self.site.get_index(model_instance.__class__)
         field_name = index.get_content_field()
         params = {
@@ -157,10 +203,33 @@ class SearchBackend(BaseSearchBackend):
         if end_offset is not None:
             params['rows'] = end_offset
         
-        if additional_query_string:
-            params['fq'] = additional_query_string
+        narrow_queries = set()
         
-        raw_results = self.conn.more_like_this("id:%s" % self.get_identifier(model_instance), field_name, **params)
+        if limit_to_registered_models:
+            # Using narrow queries, limit the results to only models registered
+            # with the current site.
+            if narrow_queries is None:
+                narrow_queries = set()
+            
+            registered_models = self.build_registered_models_list()
+            
+            if len(registered_models) > 0:
+                narrow_queries.add('django_ct:(%s)' % ' OR '.join(registered_models))
+        
+        if additional_query_string:
+            narrow_queries.add(additional_query_string)
+        
+        if narrow_queries:
+            params['fq'] = list(narrow_queries)
+        
+        query = "id:%s" % get_identifier(model_instance)
+        
+        try:
+            raw_results = self.conn.more_like_this(query, field_name, **params)
+        except (IOError, SolrError), e:
+            self.log.error("Failed to fetch More Like This from Solr for document '%s': %s", query, e)
+            raw_results = EmptyResults()
+        
         return self._process_results(raw_results)
     
     def _process_results(self, raw_results, highlight=False):
@@ -241,9 +310,6 @@ class SearchBackend(BaseSearchBackend):
             if field_class.document is True:
                 content_field_name = field_name
             
-            if field_class.indexed is False:
-                field_data['indexed'] = 'false'
-            
             # DRL_FIXME: Perhaps move to something where, if none of these
             #            checks succeed, call a custom method on the form that
             #            returns, per-backend, the right type of storage?
@@ -261,6 +327,15 @@ class SearchBackend(BaseSearchBackend):
             elif isinstance(field_class, MultiValueField):
                 field_data['multi_valued'] = 'true'
             
+            # Do this last to override `text` fields.
+            if field_class.indexed is False:
+                field_data['indexed'] = 'false'
+                
+                # If it's text and not being indexed, we probably don't want
+                # to do the normal lowercase/tokenize/stemming/etc. dance.
+                if field_data['type'] == 'text':
+                    field_data['type'] = 'string'
+            
             schema_fields.append(field_data)
         
         return (content_field_name, schema_fields)
@@ -270,82 +345,46 @@ class SearchQuery(BaseSearchQuery):
     def __init__(self, backend=None):
         super(SearchQuery, self).__init__(backend=backend)
         self.backend = backend or SearchBackend()
-    
-    def build_query(self):
-        query = ''
+
+    def matching_all_fragment(self):
+        return '*:*'
+
+    def build_query_fragment(self, field, filter_type, value):
+        result = ''
         
-        if not self.query_filters:
-            # Match all.
-            query = '*:*'
+        if not isinstance(value, (list, tuple)):
+            # Convert whatever we find to what pysolr wants.
+            value = self.backend.conn._from_python(value)
+        
+        # Check to see if it's a phrase for an exact match.
+        if ' ' in value:
+            value = '"%s"' % value
+        
+        # 'content' is a special reserved word, much like 'pk' in
+        # Django's ORM layer. It indicates 'no special field'.
+        if field == 'content':
+            result = value
         else:
-            query_chunks = []
+            filter_types = {
+                'exact': "%s:%s",
+                'gt': "%s:{%s TO *}",
+                'gte': "%s:[%s TO *]",
+                'lt': "%s:{* TO %s}",
+                'lte': "%s:[* TO %s]",
+                'startswith': "%s:%s*",
+            }
             
-            for the_filter in self.query_filters:
-                if the_filter.is_and():
-                    query_chunks.append('AND')
+            if filter_type != 'in':
+                result = filter_types[filter_type] % (field, value)
+            else:
+                in_options = []
                 
-                if the_filter.is_not():
-                    query_chunks.append('NOT')
+                for possible_value in value:
+                    in_options.append('%s:"%s"' % (field, self.backend.conn._from_python(possible_value)))
                 
-                if the_filter.is_or():
-                    query_chunks.append('OR')
-                
-                value = the_filter.value
-                
-                if not isinstance(value, (list, tuple)):
-                    # Convert whatever we find to what pysolr wants.
-                    value = self.backend.conn._from_python(value)
-                
-                # Check to see if it's a phrase for an exact match.
-                if ' ' in value:
-                    value = '"%s"' % value
-                
-                # 'content' is a special reserved word, much like 'pk' in
-                # Django's ORM layer. It indicates 'no special field'.
-                if the_filter.field == 'content':
-                    query_chunks.append(value)
-                else:
-                    filter_types = {
-                        'exact': "%s:%s",
-                        'gt': "%s:{%s TO *}",
-                        'gte': "%s:[%s TO *]",
-                        'lt': "%s:{* TO %s}",
-                        'lte': "%s:[* TO %s]",
-                        'startswith': "%s:%s*",
-                    }
-                    
-                    if the_filter.filter_type != 'in':
-                        query_chunks.append(filter_types[the_filter.filter_type] % (the_filter.field, value))
-                    else:
-                        in_options = []
-                        
-                        for possible_value in value:
-                            in_options.append('%s:"%s"' % (the_filter.field, self.backend.conn._from_python(possible_value)))
-                        
-                        query_chunks.append("(%s)" % " OR ".join(in_options))
-            
-            if query_chunks[0] in ('AND', 'OR'):
-                # Pull off an undesirable leading "AND" or "OR".
-                del(query_chunks[0])
-            
-            query = " ".join(query_chunks)
+                result = "(%s)" % " OR ".join(in_options)
         
-        if len(self.models):
-            models = ['django_ct:%s.%s' % (model._meta.app_label, model._meta.module_name) for model in self.models]
-            models_clause = ' OR '.join(models)
-            final_query = '(%s) AND (%s)' % (query, models_clause)
-        else:
-            final_query = query
-        
-        if self.boost:
-            boost_list = []
-            
-            for boost_word, boost_value in self.boost.items():
-                boost_list.append("%s^%s" % (boost_word, boost_value))
-            
-            final_query = "%s %s" % (final_query, " ".join(boost_list))
-        
-        return final_query
+        return result
     
     def run(self, spelling_query=None):
         """Builds and executes the query. Returns a list of search results."""
@@ -366,7 +405,7 @@ class SearchQuery(BaseSearchQuery):
             kwargs['sort_by'] = ", ".join(order_by_list)
         
         if self.end_offset is not None:
-            kwargs['end_offset'] = self.end_offset - self.start_offset
+            kwargs['end_offset'] = self.end_offset
         
         if self.highlight:
             kwargs['highlight'] = self.highlight

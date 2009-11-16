@@ -17,16 +17,19 @@ if not hasattr(settings, "HAYSTACK_SEARCH_ENGINE"):
 
 
 # Load the search backend.
-def load_backend(backend_name):
+def load_backend(backend_name=None):
+    if not backend_name:
+        backend_name = settings.HAYSTACK_SEARCH_ENGINE
+    
     try:
         # Most of the time, the search backend will be one of the  
         # backends that ships with haystack, so look there first.
-        return __import__('haystack.backends.%s_backend' % settings.HAYSTACK_SEARCH_ENGINE, {}, {}, [''])
+        return __import__('haystack.backends.%s_backend' % backend_name, {}, {}, [''])
     except ImportError, e:
         # If the import failed, we might be looking for a search backend 
         # distributed external to haystack. So we'll try that next.
         try:
-            return __import__('%s_backend' % settings.HAYSTACK_SEARCH_ENGINE, {}, {}, [''])
+            return __import__('%s_backend' % backend_name, {}, {}, [''])
         except ImportError, e_user:
             # The search backend wasn't found. Display a helpful error message
             # listing all possible (built-in) database backends.
@@ -39,9 +42,9 @@ def load_backend(backend_name):
                 and not f.endswith('.pyc')
             ]
             available_backends.sort()
-            if settings.HAYSTACK_SEARCH_ENGINE not in available_backends:
+            if backend_name not in available_backends:
                 raise ImproperlyConfigured, "%r isn't an available search backend. Available options are: %s" % \
-                    (settings.HAYSTACK_SEARCH_ENGINE, ", ".join(map(repr, available_backends)))
+                    (backend_name, ", ".join(map(repr, available_backends)))
             else:
                 raise # If there's some other error, this must be an error in Django itself.
 
@@ -57,13 +60,13 @@ def autodiscover():
     """
     import imp
     from django.conf import settings
-
+    
     for app in settings.INSTALLED_APPS:
         # For each app, we need to look for an search_indexes.py inside that app's
         # package. We can't use os.path here -- recall that modules may be
         # imported different ways (think zip files) -- so we need to get
         # the app's __path__ and look for search_indexes.py on that path.
-
+        
         # Step 1: find out the app's __path__ Import errors here will (and
         # should) bubble up, but a missing __path__ (which is legal, but weird)
         # fails silently -- apps that do weird things with __path__ might
@@ -72,7 +75,7 @@ def autodiscover():
             app_path = __import__(app, {}, {}, [app.split('.')[-1]]).__path__
         except AttributeError:
             continue
-
+        
         # Step 2: use imp.find_module to find the app's search_indexes.py. For some
         # reason imp.find_module raises ImportError if the app can't be found
         # but doesn't actually try to import the module. So skip this app if
@@ -81,7 +84,7 @@ def autodiscover():
             imp.find_module('search_indexes', app_path)
         except ImportError:
             continue
-
+        
         # Step 3: import the app's search_index file. If this has errors we want them
         # to bubble up.
         __import__("%s.search_indexes" % app)

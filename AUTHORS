@@ -2,6 +2,7 @@ Primary Authors:
 
     * Daniel Lindsley
     * Matt Croydon (some documentation, sanity checks and the sweet name)
+    * Travis Cline (the original SQ implementation)
 
 
 Thanks to
@@ -25,3 +26,6 @@ Thanks to
     * David Sauve (notanumber) for the Xapian backend and various patches.
     * ryszard for various patches.
     * Patryk Zawadzki (patrys) for various patches and feedback.
+    * Frank Wiles for documentation patches.
+    * Chris Adams (acdha) for various patches.
+    * Kyle MacFarlane for various patches.
