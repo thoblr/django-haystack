@@ -187,7 +187,6 @@ class SearchBackend(BaseSearchBackend):
         else:
             return narrow_query
     
-    def more_like_this(self, model_instance, additional_query_string=None, start_offset=0, end_offset=None, **kwargs):
     def more_like_this(self, model_instance, additional_query_string=None,
                        start_offset=0, end_offset=None,
                        limit_to_registered_models=True, **kwargs):
